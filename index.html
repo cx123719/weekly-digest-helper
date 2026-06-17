@@ -90,6 +90,8 @@
         }
         .small-btn:hover { background: #f1f5f9; }
         .selected-indicator { color: #059669; font-weight: bold; margin-left: 6px; }
+        .date-status { font-size: 12px; margin-left: 8px; color: #64748b; }
+        .date-status.locked { color: #059669; }
     </style>
 </head>
 <body>
@@ -140,12 +142,14 @@
             <input type="date" id="startDate">
             <label>到</label>
             <input type="date" id="endDate">
+            <button class="btn btn-small" id="applyDateBtn">确定</button>
+            <span class="date-status" id="dateStatus">未锁定，将使用全部记录</span>
         </div>
         <div class="report-actions">
             <button class="btn btn-primary" id="generateBtn">📋 普通生成</button>
             <button class="btn btn-primary" id="aiGenerateBtn">✨ AI 提炼</button>
         </div>
-        <div class="report-area" id="reportArea" style="margin-top:12px;">选择日期范围后点击生成</div>
+        <div class="report-area" id="reportArea" style="margin-top:12px;">选择日期范围后点击确定，再生成汇报</div>
         <button class="btn" id="copyBtn" style="margin-top:8px;">📋 复制当前显示</button>
         
         <!-- 生成历史（AI多次结果） -->
@@ -248,23 +252,64 @@
                 return text.replace(/[&<>"']/g, m => map[m]);
             }
 
-            // ---------- 普通生成汇报 ----------
-            function getFilteredRecords() {
-                const startDateVal = document.getElementById('startDate').value;
-                const endDateVal = document.getElementById('endDate').value;
-                if (!startDateVal || !endDateVal) return null;
-                const start = new Date(startDateVal); start.setHours(0,0,0,0);
-                const end = new Date(endDateVal); end.setHours(23,59,59,999);
-                if (start > end) return null;
-                let records = loadRecords();
-                return records.filter(r => {
-                    const t = new Date(r.time);
-                    return t >= start && t <= end;
-                }).sort((a, b) => new Date(a.time) - new Date(b.time));
+            // ---------- 日期锁定逻辑 ----------
+            let appliedStart = null;
+            let appliedEnd = null;
+
+            function updateDateStatus() {
+                const statusEl = document.getElementById('dateStatus');
+                if (appliedStart && appliedEnd) {
+                    statusEl.textContent = `已锁定: ${appliedStart} ~ ${appliedEnd}`;
+                    statusEl.className = 'date-status locked';
+                } else {
+                    statusEl.textContent = '未锁定，将使用全部记录';
+                    statusEl.className = 'date-status';
+                }
             }
 
+            document.getElementById('applyDateBtn').addEventListener('click', function() {
+                const startVal = document.getElementById('startDate').value;
+                const endVal = document.getElementById('endDate').value;
+                if (!startVal || !endVal) {
+                    alert('请先选择起始和结束日期');
+                    return;
+                }
+                appliedStart = startVal;
+                appliedEnd = endVal;
+                updateDateStatus();
+            });
+
+            // 日期输入框变化时，解除锁定
+            ['startDate','endDate'].forEach(id => {
+                document.getElementById(id).addEventListener('change', function() {
+                    appliedStart = null;
+                    appliedEnd = null;
+                    updateDateStatus();
+                });
+            });
+
+            // ---------- 筛选记录 ----------
+            function getFilteredRecords() {
+                if (appliedStart && appliedEnd) {
+                    const start = new Date(appliedStart); start.setHours(0,0,0,0);
+                    const end = new Date(appliedEnd); end.setHours(23,59,59,999);
+                    if (start > end) return null;
+                    let records = loadRecords();
+                    return records.filter(r => {
+                        const t = new Date(r.time);
+                        return t >= start && t <= end;
+                    }).sort((a, b) => new Date(a.time) - new Date(b.time));
+                } else {
+                    // 未锁定，使用全部记录，按时间升序
+                    let records = loadRecords();
+                    if (records.length === 0) return [];
+                    return records.sort((a, b) => new Date(a.time) - new Date(b.time));
+                }
+            }
+
+            // ---------- 普通生成汇报 ----------
             function generateReportText(records) {
-                if (!records || records.length === 0) return '所选日期范围内没有记录。';
+                if (!records || records.length === 0) return '所选范围内没有记录。';
                 let reportLines = [];
                 let currentDateStr = '';
                 let counter = 1;
@@ -285,7 +330,7 @@
             function generateNormalReport() {
                 const records = getFilteredRecords();
                 const reportArea = document.getElementById('reportArea');
-                if (!records) { reportArea.textContent = '请选择正确的日期范围。'; return; }
+                if (records === null) { reportArea.textContent = '日期范围不正确。'; return; }
                 reportArea.textContent = generateReportText(records);
             }
 
@@ -325,7 +370,7 @@
                     text: text,
                     time: new Date().toISOString()
                 });
-                if (history.length > 7) history = history.slice(0, 5);
+                if (history.length > 5) history = history.slice(0, 5);
                 saveAIHistory(history);
                 renderHistory();
             }
@@ -435,8 +480,8 @@
             async function generateAIReport() {
                 const records = getFilteredRecords();
                 const reportArea = document.getElementById('reportArea');
-                if (!records) { reportArea.textContent = '请选择正确的日期范围。'; return; }
-                if (records.length === 0) { reportArea.textContent = '所选日期范围内没有记录。'; return; }
+                if (records === null) { reportArea.textContent = '日期范围不正确。'; return; }
+                if (records.length === 0) { reportArea.textContent = '所选范围内没有记录。'; return; }
 
                 const settings = loadSettings();
                 if (!settings.apiUrl || !settings.apiKey) {
@@ -456,7 +501,7 @@
 
                 const prompt = `你是一名政府部门的办公室主任，负责撰写每周工作总结，供领导班子审阅。请根据以下日常零星工作记录，整理成一份正式的周工作汇报，要求：
 1. 按日期分组，格式为【MM-DD】。
-2. 每个日期下，用规范、简练的公文语言提炼出主要工作；每条按照原先的序号，不改变序号（如果有序号的话）或者（没有序号的话，智能识别内容进行编序号号开头）。
+2. 每个日期下，用规范、简练的公文语言提炼出主要工作；每条按照原先的序号，不改变序号（如果有序号的话）或者（没有序号的话，智能识别内容进行编序号号开头）；新的序号另起一行，前后序号的样式要一致。
 3. 内容上要体现工作的落实情况、推进进度和协调对接情况，避免口语化和流水账，突出工作实效和下一步打算。
 4. 整体语气庄重、平实，符合机关行文规范，不夸张、不省略重要节点。
 5. 直接输出汇报内容（对相关表达只进行优化润色，不进行不符实际的扩写）；不要添加任何说明、标题或结尾落款。
@@ -533,7 +578,7 @@ ${rawList}`;
             document.getElementById('aiGenerateBtn').addEventListener('click', generateAIReport);
             document.getElementById('copyBtn').addEventListener('click', copyCurrent);
 
-            // 默认日期范围
+            // 默认日期范围（仅显示，不锁定）
             function setDefaultDateRange() {
                 const now = new Date();
                 const dayOfWeek = now.getDay();
@@ -548,6 +593,7 @@ ${rawList}`;
 
             // 初始化
             setDefaultDateRange();
+            updateDateStatus(); // 显示未锁定
             renderRecordList();
             applySettingsToForm();
             renderHistory();
