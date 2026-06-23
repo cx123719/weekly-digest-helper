@@ -96,9 +96,7 @@
             display: flex; justify-content: space-between; align-items: center;
             margin-bottom: 10px; font-weight: 600; font-size: 15px;
         }
-        .day-block {
-            margin-bottom: 8px;
-        }
+        .day-block { margin-bottom: 8px; }
         .day-label {
             font-weight: 600; font-size: 14px; margin-bottom: 4px;
             padding-bottom: 4px; border-bottom: 1px dashed #e2e8f0;
@@ -417,14 +415,16 @@
                 });
             }
 
-            // 解析AI汇报文本，提取每天的条目
+            // 增强的解析函数：支持 【MM-DD】、【M-D】、【YYYY-MM-DD】等
             function parseReportToDays(reportText) {
                 const days = {};
                 const lines = reportText.split('\n');
                 let currentDate = null;
+                // 匹配各种格式的日期标记
+                const dateRegex = /^【\s*(\d{1,2}-\d{1,2}|\d{4}-\d{1,2}-\d{1,2})\s*】/;
                 for (const line of lines) {
                     const trimmed = line.trim();
-                    const dateMatch = trimmed.match(/^【(\d{1,2}-\d{1,2}|\d{4}-\d{1,2}-\d{1,2})】/);
+                    const dateMatch = trimmed.match(dateRegex);
                     if (dateMatch) {
                         currentDate = dateMatch[1];
                         if (!days[currentDate]) days[currentDate] = [];
@@ -442,28 +442,27 @@
                 const history = loadAIHistory();
                 const found = history.find(h => h.id === id);
                 if (!found) return;
-                const days = parseReportToDays(found.text);
+                let days = parseReportToDays(found.text);
+                
+                // 如果解析失败，提示用户
                 if (Object.keys(days).length === 0) {
-                    alert('未能解析出日期条目，请检查AI输出格式');
+                    alert('AI 输出未包含日期标记（如【06-15】）。\n请在 AI 提示词中确保要求“按日期分组，格式为【MM-DD】”。\n\n当前输出前100字：\n' + found.text.substring(0, 100));
                     return;
                 }
+                
                 let saved = loadSavedReports();
                 const now = new Date().toISOString();
-                // 查找相同周期的卡片（startDate 和 endDate 完全匹配）
                 let period = (appliedStart && appliedEnd) ? saved.find(p => p.startDate === appliedStart && p.endDate === appliedEnd) : null;
                 if (!period) {
-                    // 新建周期
                     period = {
                         id: Date.now().toString(36) + Math.random().toString(36).slice(2,6),
                         startDate: appliedStart,
                         endDate: appliedEnd,
-                        days: {} // key: "MM-DD", value: [{id, text, time}]
+                        days: {}
                     };
                     saved.push(period);
                 }
-                // 确保 days 对象存在
                 if (!period.days) period.days = {};
-                // 按天追加条目
                 for (const [day, entries] of Object.entries(days)) {
                     if (!period.days[day]) period.days[day] = [];
                     for (const entry of entries) {
@@ -494,7 +493,6 @@
                     list.innerHTML = '<div class="empty-message">暂无保存的汇报</div>';
                     return;
                 }
-                // 按 startDate 降序排列
                 const sorted = [...saved].sort((a, b) => {
                     const dateA = a.startDate ? new Date(a.startDate) : new Date(0);
                     const dateB = b.startDate ? new Date(b.startDate) : new Date(0);
@@ -504,11 +502,9 @@
                     const rangeStr = (period.startDate && period.endDate) ? `${period.startDate} ~ ${period.endDate}` : '未锁定日期范围';
                     let daysHtml = '';
                     if (period.days && Object.keys(period.days).length > 0) {
-                        // 按日期降序排序
                         const sortedDays = Object.keys(period.days).sort((a,b) => b.localeCompare(a));
                         daysHtml = sortedDays.map(day => {
                             const entries = period.days[day];
-                            // 按时间倒序
                             const sortedEntries = [...entries].sort((a,b) => new Date(b.time) - new Date(a.time));
                             let entriesHtml = sortedEntries.map(e => {
                                 const eDate = new Date(e.time);
@@ -541,7 +537,6 @@
                     </div>`;
                 }).join('');
 
-                // 绑定复制单条
                 document.querySelectorAll('.copy-entry-btn').forEach(btn => {
                     btn.addEventListener('click', function() {
                         const entryItem = this.closest('.entry-item');
@@ -549,7 +544,6 @@
                         navigator.clipboard.writeText(text).then(() => alert('已复制'));
                     });
                 });
-                // 绑定删除单条
                 document.querySelectorAll('.delete-entry-btn').forEach(btn => {
                     btn.addEventListener('click', function() {
                         const entryItem = this.closest('.entry-item');
@@ -571,7 +565,6 @@
                         renderSavedReports();
                     });
                 });
-                // 绑定删除周期
                 document.querySelectorAll('.delete-period-btn').forEach(btn => {
                     btn.addEventListener('click', function() {
                         const periodCard = this.closest('.period-card');
@@ -590,7 +583,7 @@
                 }
             });
 
-            // ---------- AI 提炼 ----------
+            // ---------- AI 提炼（已加入日期分组要求）----------
             async function generateAIReport() {
                 const records = getFilteredRecords();
                 const reportArea = document.getElementById('reportArea');
@@ -613,11 +606,13 @@
                     return `[${dateStr}] ${r.text}`;
                 }).join('\n');
 
+                // 修正后的提示词，包含日期分组要求
                 const prompt = `你是一名政府部门的办公室主任，负责撰写每周工作总结，供领导班子审阅。请根据以下日常零星工作记录，整理成一份正式的周工作汇报，要求：
-1. 用规范、简练的公文语言提炼出主要工作；每条按照原先的序号，不改变序号（如果有序号的话）或者（没有序号的话，智能识别内容进行编序号号开头）；新的序号另起一行，前后序号的样式要一致。
-2. 内容上要体现工作的落实情况、推进进度和协调对接情况，避免口语化和流水账，突出工作实效和下一步打算。
-3. 整体语气庄重、平实，符合机关行文规范，不夸张、不省略重要节点。
-4. 直接输出汇报内容（对相关表达只进行优化润色，不进行不符实际的扩写）；不要添加任何说明、标题或结尾落款。
+1. 按日期分组，每组开头用格式【MM-DD】（如【06-15】）标出日期，然后列出该日的主要工作条目。
+2. 用规范、简练的公文语言提炼出主要工作；每条按照原先的序号，不改变序号（如果有序号的话）或者（没有序号的话，智能识别内容进行编序号开头）；新的序号另起一行，前后序号的样式要一致。
+3. 内容上要体现工作的落实情况、推进进度和协调对接情况，避免口语化和流水账，突出工作实效和下一步打算。
+4. 整体语气庄重、平实，符合机关行文规范，不夸张、不省略重要节点。
+5. 直接输出汇报内容（对相关表达只进行优化润色，不进行不符实际的扩写）；不要添加任何说明、标题或结尾落款。
 
 原始记录：
 ${rawList}`;
