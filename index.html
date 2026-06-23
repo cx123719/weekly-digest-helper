@@ -172,7 +172,7 @@
         <div class="report-area" id="reportArea" style="margin-top:12px;">选择日期范围后点击确定，再生成汇报</div>
         <div class="save-current-row" id="saveCurrentRow" style="display:none;">
             <button class="btn btn-primary btn-small" id="saveCurrentBtn">💾 选用当前结果</button>
-            <span style="font-size:12px; color:#64748b;">点击后将按日期自动保存到已保存汇报</span>
+            <span style="font-size:12px; color:#64748b;">点击后将按原始记录时间自动保存</span>
         </div>
         <button class="btn" id="copyBtn" style="margin-top:8px;">📋 复制当前显示</button>
         
@@ -201,6 +201,9 @@
             const SETTINGS_KEY = 'weekly_ai_settings';
             const AI_HISTORY_KEY = 'ai_history';
             const SAVED_REPORTS_KEY = 'saved_reports';
+
+            // 全局暂存当前AI提炼对应的原始记录
+            window.currentAIRecords = null;
 
             function loadRecords() {
                 const raw = localStorage.getItem(RECORDS_KEY);
@@ -352,6 +355,8 @@
                 const text = generateReportText(records);
                 reportArea.textContent = text;
                 document.getElementById('saveCurrentRow').style.display = 'flex';
+                // 普通生成也保留原始记录，以便选用时按原始时间分组
+                window.currentAIRecords = records;
             }
 
             // ---------- AI 设置 ----------
@@ -427,79 +432,27 @@
                 });
             }
 
-            // 增强的解析函数，预处理全角括号、多余破折号等
-            function parseReportToDays(reportText) {
-                const days = {};
-                // 全角括号替换为半角
-                let cleaned = reportText.replace(/［/g, '【').replace(/］/g, '】');
-                // 修复多余破折号：06--22 -> 06-22
-                cleaned = cleaned.replace(/【\s*(\d{1,2})-{2,}(\d{1,2})\s*】/g, (m, a, b) => `【${a}-${b}】`);
-                // 修复只有一位数字的月份日期，补齐两位：如【6-5】 -> 【06-05】
-                cleaned = cleaned.replace(/【\s*(\d{1,2})-(\d{1,2})\s*】/g, (m, a, b) => {
-                    return `【${a.padStart(2, '0')}-${b.padStart(2, '0')}】`;
-                });
-
-                const lines = cleaned.split('\n');
-                let currentDate = null;
-                const dateRegex = /^【\s*(\d{2}-\d{2})\s*】/;  // 严格的两位格式
-                for (const line of lines) {
-                    const trimmed = line.trim();
-                    const dateMatch = trimmed.match(dateRegex);
-                    if (dateMatch) {
-                        currentDate = dateMatch[1];
-                        if (!days[currentDate]) days[currentDate] = [];
-                        const rest = trimmed.replace(dateMatch[0], '').trim();
-                        if (rest) days[currentDate].push(rest);
-                    } else if (currentDate && trimmed) {
-                        days[currentDate].push(trimmed);
-                    }
-                }
-
-                // 如果仍然没有，宽松全局匹配
-                if (Object.keys(days).length === 0) {
-                    const globalRegex = /【\s*(\d{2}-\d{2})\s*】/g;
-                    let m;
-                    while ((m = globalRegex.exec(cleaned)) !== null) {
-                        let datePart = m[1];
-                        if (!days[datePart]) days[datePart] = [];
-                        const start = m.index + m[0].length;
-                        const nextMatch = globalRegex.exec(cleaned);
-                        let end = nextMatch ? nextMatch.index : cleaned.length;
-                        const section = cleaned.substring(start, end).trim();
-                        if (section) {
-                            section.split('\n').forEach(s => {
-                                const trimmed = s.trim();
-                                if (trimmed) days[datePart].push(trimmed);
-                            });
-                        }
-                        globalRegex.lastIndex = end;
-                    }
-                }
-
-                return days;
-            }
-
-            // 选用历史记录
+            // 选用历史记录（没有原始记录时，尝试解析日期，解析不到则存为汇总）
             function selectHistory(id) {
                 const history = loadAIHistory();
                 const found = history.find(h => h.id === id);
                 if (!found) return;
-                saveReportText(found.text);
+                saveReportText(found.text, null);
             }
 
-            // 选用当前报告区内容
+            // 选用当前报告区内容（有原始记录）
             function saveCurrentReport() {
                 const text = document.getElementById('reportArea').textContent;
                 if (!text || text.includes('请选择') || text.includes('没有记录') || text.includes('正在提炼')) {
                     alert('没有可保存的内容');
                     return;
                 }
-                saveReportText(text);
+                saveReportText(text, window.currentAIRecords);
             }
 
-            // 核心保存：解析到日期则按天保存，否则整个存为“汇总”
-            function saveReportText(text) {
-                let days = parseReportToDays(text);
+            // 核心保存：如果有原始记录，则按原始记录时间分组；否则尝试解析文本中的日期
+            function saveReportText(text, records) {
+                let days = {};
                 let saved = loadSavedReports();
                 const now = new Date().toISOString();
                 let period = (appliedStart && appliedEnd) ? saved.find(p => p.startDate === appliedStart && p.endDate === appliedEnd) : null;
@@ -514,30 +467,90 @@
                 }
                 if (!period.days) period.days = {};
 
-                if (Object.keys(days).length > 0) {
-                    for (const [day, entries] of Object.entries(days)) {
-                        if (!period.days[day]) period.days[day] = [];
-                        for (const entry of entries) {
-                            period.days[day].push({
-                                id: Date.now().toString(36) + Math.random().toString(36).slice(2,6),
-                                text: entry,
-                                time: now
-                            });
+                if (records && records.length > 0) {
+                    // 有原始记录，将AI输出按行分割，与原始记录顺序匹配
+                    const lines = text.split('\n').map(l => l.trim()).filter(l => l);
+                    // 尽量一一对应，如果行数不同，只用能匹配上的
+                    const pairs = [];
+                    for (let i = 0; i < Math.min(lines.length, records.length); i++) {
+                        pairs.push({ text: lines[i], record: records[i] });
+                    }
+                    // 按日期分组
+                    for (const pair of pairs) {
+                        const d = new Date(pair.record.time);
+                        const day = `${d.getMonth()+1}-${d.getDate()}`; // 月-日
+                        if (!days[day]) days[day] = [];
+                        days[day].push(pair.text);
+                    }
+                    // 如果行数不匹配，剩下的内容（可能多余）也作为未分组汇总追加
+                    if (lines.length > records.length) {
+                        const rest = lines.slice(records.length).join('\n');
+                        if (rest) {
+                            const summaryKey = '汇总';
+                            if (!days[summaryKey]) days[summaryKey] = [];
+                            days[summaryKey].push(rest);
+                        }
+                    } else if (records.length > lines.length) {
+                        // 如果原始记录多于输出行，剩余记录仍按原始文本保存
+                        const remainingRecords = records.slice(lines.length);
+                        for (const rec of remainingRecords) {
+                            const d = new Date(rec.time);
+                            const day = `${d.getMonth()+1}-${d.getDate()}`;
+                            if (!days[day]) days[day] = [];
+                            days[day].push(rec.text);
                         }
                     }
                 } else {
-                    const summaryKey = '汇总';
-                    if (!period.days[summaryKey]) period.days[summaryKey] = [];
-                    period.days[summaryKey].push({
-                        id: Date.now().toString(36) + Math.random().toString(36).slice(2,6),
-                        text: text,
-                        time: now
-                    });
+                    // 没有原始记录，尝试解析AI输出中的日期标记
+                    days = parseReportToDays(text);
+                    if (Object.keys(days).length === 0) {
+                        // 解析不到就整个作为汇总
+                        const summaryKey = '汇总';
+                        if (!days[summaryKey]) days[summaryKey] = [];
+                        days[summaryKey].push(text);
+                    }
+                }
+
+                // 将解析或分组结果追加到period
+                for (const [day, entries] of Object.entries(days)) {
+                    if (!period.days[day]) period.days[day] = [];
+                    for (const entry of entries) {
+                        period.days[day].push({
+                            id: Date.now().toString(36) + Math.random().toString(36).slice(2,6),
+                            text: entry,
+                            time: now
+                        });
+                    }
                 }
 
                 saveSavedReports(saved);
                 renderSavedReports();
                 alert('已保存选用结果');
+            }
+
+            // 增强解析函数：提取【MM-DD】或【YYYY-MM-DD】（保留作为历史选用时的备用）
+            function parseReportToDays(reportText) {
+                const days = {};
+                let cleaned = reportText.replace(/［/g, '【').replace(/］/g, '】');
+                cleaned = cleaned.replace(/【\s*(\d{1,2})-{2,}(\d{1,2})\s*】/g, (m, a, b) => `【${a}-${b}】`);
+                const lines = cleaned.split('\n');
+                let currentDate = null;
+                const dateRegex = /^【\s*(\d{1,2}-\d{1,2}|\d{4}-\d{1,2}-\d{1,2})\s*】/;
+                for (const line of lines) {
+                    const trimmed = line.trim();
+                    const dateMatch = trimmed.match(dateRegex);
+                    if (dateMatch) {
+                        let datePart = dateMatch[1];
+                        if (datePart.length > 5) datePart = datePart.slice(5);
+                        currentDate = datePart;
+                        if (!days[currentDate]) days[currentDate] = [];
+                        const rest = trimmed.replace(dateMatch[0], '').trim();
+                        if (rest) days[currentDate].push(rest);
+                    } else if (currentDate && trimmed) {
+                        days[currentDate].push(trimmed);
+                    }
+                }
+                return days;
             }
 
             document.getElementById('clearHistoryBtn').addEventListener('click', function() {
@@ -673,7 +686,7 @@
                 }
             });
 
-            // ---------- AI 提炼（强化日期约束） ----------
+            // ---------- AI 提炼（AI不输出日期，只润色内容） ----------
             async function generateAIReport() {
                 const records = getFilteredRecords();
                 const reportArea = document.getElementById('reportArea');
@@ -688,23 +701,20 @@
                     return;
                 }
 
+                // 保存原始记录以便选用时按时间分组
+                window.currentAIRecords = records;
                 reportArea.textContent = 'AI 正在提炼中，请稍候...';
 
-                const rawList = records.map(r => {
-                    const d = new Date(r.time);
-                    const dateStr = `${d.getFullYear()}-${(d.getMonth()+1).toString().padStart(2,'0')}-${d.getDate().toString().padStart(2,'0')}`;
-                    return `[${dateStr}] ${r.text}`;
-                }).join('\n');
+                // 构建不带日期标记的条目列表（保持顺序）
+                const items = records.map(r => r.text).join('\n');
 
-                const prompt = `你是一名政府部门的办公室主任，负责撰写每周工作总结，供领导班子审阅。请根据以下日常零星工作记录，整理成一份正式的周工作汇报，要求：
-1. 必须按日期分组，每个日期用【MM-DD】独占一行作为标题（月份和日期都必须为两位数字，如【06-23】），然后另起一行列出该日的主要工作条目。
-2. 严格使用每条记录前面方括号内提供的日期，不要自行更改或编造日期。
-3. 用规范、简练的公文语言提炼工作内容；如果原始记录已经足够正式，只需微调措辞，严禁添加任何原文中没有的事实或夸大性描述。
-4. 每条工作单独一行，以“1.”“2.”等开头，如果原始记录有序号则保留原序号。
-5. 只输出汇报正文，不要加任何标题、引言或结尾落款，也不要添加任何解释性文字。
+                const prompt = `你是一名政府部门的办公室主任，负责润色工作汇报条目。我会给你一些日常工作记录，每行一条。请逐条优化措辞，使其更正式、简练，符合机关公文风格。要求：
+- 严格按照输入的顺序输出，每条一行，不要合并或拆分。
+- 只优化语言表达，不要添加任何原文中没有的事实。
+- 不要输出任何日期、标题、序号或其他额外内容，只输出优化后的条目本身。
 
 原始记录：
-${rawList}`;
+${items}`;
 
                 const messages = [
                     { role: "system", content: "你是一名政府部门的办公室主任。" },
