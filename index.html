@@ -88,15 +88,23 @@
             background: white; cursor: pointer;
         }
         .small-btn:hover { background: #f1f5f9; }
-        .selected-indicator { color: #059669; font-weight: bold; margin-left: 6px; }
         .date-status { font-size: 12px; margin-left: 8px; color: #64748b; }
         .date-status.locked { color: #059669; }
         .saved-range { font-size: 12px; color: #475569; margin-bottom: 4px; }
-        .version-badge {
-            display: inline-block; background: #dbeafe; color: #1e40af;
-            font-size: 11px; padding: 1px 6px; border-radius: 8px; margin-left: 6px;
-            font-weight: 500;
+        .version-item {
+            border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px; margin-bottom: 6px;
+            background: #fff;
         }
+        .version-header {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 4px;
+        }
+        .version-badge {
+            background: #dbeafe; color: #1e40af; font-size: 12px; padding: 2px 8px;
+            border-radius: 8px; font-weight: 500;
+        }
+        .version-time { font-size: 11px; color: #64748b; }
+        .version-content { white-space: pre-wrap; font-size: 14px; }
     </style>
 </head>
 <body>
@@ -167,7 +175,7 @@
         </div>
     </div>
 
-    <!-- 已保存的汇报（合并同周期） -->
+    <!-- 已保存的汇报（周期卡片，内有多版本） -->
     <div class="card" id="savedReportsCard">
         <h3 style="margin-bottom:8px; font-size:18px;">💾 已保存的汇报</h3>
         <div id="savedList">
@@ -409,28 +417,36 @@
                 });
             }
 
-            // 选用历史记录（合并同周期）
+            // 选用历史记录（同周期追加版本，不覆盖）
             function selectHistory(id) {
                 const history = loadAIHistory();
                 const found = history.find(h => h.id === id);
                 if (!found) return;
                 let saved = loadSavedReports();
-                // 查找是否有相同的日期范围（仅当 appliedStart 和 appliedEnd 都有值时合并）
-                const existingIndex = (appliedStart && appliedEnd) ? saved.findIndex(s => s.startDate === appliedStart && s.endDate === appliedEnd) : -1;
-                if (existingIndex !== -1) {
-                    // 更新已有条目：替换文本、更新时间、增加版本号
-                    saved[existingIndex].text = found.text;
-                    saved[existingIndex].time = new Date().toISOString();
-                    saved[existingIndex].version = (saved[existingIndex].version || 1) + 1;
-                } else {
-                    // 新增条目
-                    saved.push({
+                // 查找相同周期条目（仅当 appliedStart 和 appliedEnd 都有值时）
+                const existing = (appliedStart && appliedEnd) ? saved.find(s => s.startDate === appliedStart && s.endDate === appliedEnd) : null;
+                if (existing) {
+                    // 追加版本
+                    if (!existing.versions) existing.versions = [];
+                    const nextVersion = existing.versions.length + 1;
+                    existing.versions.push({
                         id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
                         text: found.text,
                         time: new Date().toISOString(),
+                        version: nextVersion
+                    });
+                } else {
+                    // 新建周期卡片
+                    saved.push({
+                        id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
                         startDate: appliedStart,
                         endDate: appliedEnd,
-                        version: 1
+                        versions: [{
+                            id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+                            text: found.text,
+                            time: new Date().toISOString(),
+                            version: 1
+                        }]
                     });
                 }
                 saveSavedReports(saved);
@@ -445,7 +461,7 @@
                 }
             });
 
-            // ---------- 已保存汇报（合并同周期，显示版本） ----------
+            // ---------- 已保存汇报（周期卡片，展示所有版本） ----------
             function renderSavedReports() {
                 const saved = loadSavedReports();
                 const list = document.getElementById('savedList');
@@ -461,34 +477,72 @@
                 });
                 list.innerHTML = sorted.map(s => {
                     const rangeStr = (s.startDate && s.endDate) ? `汇报周期: ${s.startDate} ~ ${s.endDate}` : '未锁定日期范围';
-                    const versionBadge = s.version && s.version > 1 ? `<span class="version-badge">v${s.version}</span>` : '';
-                    const d = new Date(s.time);
-                    const timeStr = `${d.getFullYear()}-${(d.getMonth()+1).toString().padStart(2,'0')}-${d.getDate().toString().padStart(2,'0')} ${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`;
-                    return `<div class="saved-item" data-id="${s.id}">
+                    let versionsHtml = '';
+                    if (s.versions && s.versions.length > 0) {
+                        // 版本按时间倒序（最新在前）
+                        const sortedVersions = [...s.versions].sort((a, b) => new Date(b.time) - new Date(a.time));
+                        versionsHtml = sortedVersions.map(v => {
+                            const vDate = new Date(v.time);
+                            const vTimeStr = `${vDate.getFullYear()}-${(vDate.getMonth()+1).toString().padStart(2,'0')}-${vDate.getDate().toString().padStart(2,'0')} ${vDate.getHours().toString().padStart(2,'0')}:${vDate.getMinutes().toString().padStart(2,'0')}`;
+                            return `<div class="version-item" data-version-id="${v.id}">
+                                <div class="version-header">
+                                    <span class="version-badge">v${v.version}</span>
+                                    <span class="version-time">${vTimeStr}</span>
+                                </div>
+                                <div class="version-content">${escapeHtml(v.text)}</div>
+                                <div style="margin-top:6px; display:flex; gap:6px;">
+                                    <button class="small-btn copy-version-btn">复制</button>
+                                    <button class="small-btn delete-version-btn" style="color:#b91c1c;">删除</button>
+                                </div>
+                            </div>`;
+                        }).join('');
+                    }
+                    return `<div class="saved-item" data-period-id="${s.id}">
                         <div class="saved-text">
-                            <div class="saved-range">${rangeStr} <span style="font-size:12px; color:#64748b;">更新于 ${timeStr}</span>${versionBadge}</div>
-                            <div style="white-space:pre-wrap;">${escapeHtml(s.text)}</div>
+                            <div class="saved-range">${rangeStr}</div>
+                            <div style="margin-top:6px;">${versionsHtml}</div>
                         </div>
                         <div class="saved-actions">
-                            <button class="small-btn copy-saved-btn">复制</button>
-                            <button class="small-btn delete-saved-btn" style="color:#b91c1c;">删除</button>
+                            <button class="small-btn delete-period-btn" style="color:#b91c1c;">删除周期</button>
                         </div>
                     </div>`;
                 }).join('');
-                // 复制按钮
-                document.querySelectorAll('.copy-saved-btn').forEach(btn => {
+
+                // 绑定版本复制
+                document.querySelectorAll('.copy-version-btn').forEach(btn => {
                     btn.addEventListener('click', function() {
-                        const item = this.closest('.saved-item');
-                        const text = item.querySelector('.saved-text div:last-child').innerText;
-                        navigator.clipboard.writeText(text).then(() => alert('已复制'));
+                        const versionItem = this.closest('.version-item');
+                        const content = versionItem.querySelector('.version-content').innerText;
+                        navigator.clipboard.writeText(content).then(() => alert('已复制'));
                     });
                 });
-                // 删除按钮
-                document.querySelectorAll('.delete-saved-btn').forEach(btn => {
+
+                // 绑定版本删除
+                document.querySelectorAll('.delete-version-btn').forEach(btn => {
                     btn.addEventListener('click', function() {
-                        const item = this.closest('.saved-item');
-                        const id = item.getAttribute('data-id');
-                        let saved = loadSavedReports().filter(s => s.id !== id);
+                        const versionItem = this.closest('.version-item');
+                        const versionId = versionItem.getAttribute('data-version-id');
+                        const periodItem = this.closest('.saved-item');
+                        const periodId = periodItem.getAttribute('data-period-id');
+                        let saved = loadSavedReports();
+                        const period = saved.find(p => p.id === periodId);
+                        if (!period) return;
+                        period.versions = period.versions.filter(v => v.id !== versionId);
+                        if (period.versions.length === 0) {
+                            // 删除整个周期
+                            saved = saved.filter(p => p.id !== periodId);
+                        }
+                        saveSavedReports(saved);
+                        renderSavedReports();
+                    });
+                });
+
+                // 绑定周期删除
+                document.querySelectorAll('.delete-period-btn').forEach(btn => {
+                    btn.addEventListener('click', function() {
+                        const periodItem = this.closest('.saved-item');
+                        const periodId = periodItem.getAttribute('data-period-id');
+                        let saved = loadSavedReports().filter(p => p.id !== periodId);
                         saveSavedReports(saved);
                         renderSavedReports();
                     });
