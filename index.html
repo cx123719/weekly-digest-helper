@@ -96,8 +96,12 @@
             display: flex; justify-content: space-between; align-items: center;
             margin-bottom: 10px; font-weight: 600; font-size: 15px;
         }
+        .period-header-buttons {
+            display: flex; gap: 4px; align-items: center;
+        }
         .day-block { margin-bottom: 8px; }
         .day-label {
+            display: flex; justify-content: space-between; align-items: center;
             font-weight: 600; font-size: 14px; margin-bottom: 4px;
             padding-bottom: 4px; border-bottom: 1px dashed #e2e8f0;
         }
@@ -106,8 +110,9 @@
             padding: 6px 0; border-bottom: 1px solid #f1f5f9;
         }
         .entry-text { flex: 1; font-size: 14px; white-space: pre-wrap; word-break: break-word; }
-        .entry-meta { font-size: 11px; color: #64748b; margin-bottom: 2px; }
         .save-current-row { margin-top: 8px; display: flex; gap: 8px; align-items: center; }
+        .period-content { margin-top: 6px; }
+        .collapsed .period-content { display: none; }
     </style>
 </head>
 <body>
@@ -443,7 +448,6 @@
                         days[currentDate].push(trimmed);
                     }
                 }
-                // 宽松匹配
                 if (Object.keys(days).length === 0) {
                     const globalRegex = /【\s*(\d{1,2}-\d{1,2}|\d{4}-\d{1,2}-\d{1,2})\s*】/g;
                     let m;
@@ -485,7 +489,7 @@
                 saveReportText(text);
             }
 
-            // 核心保存：优先按天拆分，否则存为“汇总”
+            // 核心保存
             function saveReportText(text) {
                 let days = parseReportToDays(text);
                 let saved = loadSavedReports();
@@ -503,7 +507,6 @@
                 if (!period.days) period.days = {};
 
                 if (Object.keys(days).length > 0) {
-                    // 有日期分组，追加到对应天
                     for (const [day, entries] of Object.entries(days)) {
                         if (!period.days[day]) period.days[day] = [];
                         for (const entry of entries) {
@@ -515,7 +518,6 @@
                         }
                     }
                 } else {
-                    // 没有日期标记，整个文本存为“汇总”条目
                     const summaryKey = '汇总';
                     if (!period.days[summaryKey]) period.days[summaryKey] = [];
                     period.days[summaryKey].push({
@@ -537,7 +539,7 @@
                 }
             });
 
-            // ---------- 已保存汇报 ----------
+            // ---------- 已保存汇报（优化后） ----------
             function renderSavedReports() {
                 const saved = loadSavedReports();
                 const list = document.getElementById('savedList');
@@ -559,43 +561,78 @@
                             const entries = period.days[day];
                             const sortedEntries = [...entries].sort((a,b) => new Date(b.time) - new Date(a.time));
                             let entriesHtml = sortedEntries.map(e => {
-                                const eDate = new Date(e.time);
-                                const eTimeStr = `${eDate.getMonth()+1}/${eDate.getDate()} ${eDate.getHours().toString().padStart(2,'0')}:${eDate.getMinutes().toString().padStart(2,'0')}`;
                                 return `<div class="entry-item" data-entry-id="${e.id}" data-day="${day}">
-                                    <div style="flex:1;">
-                                        <div class="entry-meta">添加于 ${eTimeStr}</div>
-                                        <div class="entry-text">${escapeHtml(e.text)}</div>
-                                    </div>
-                                    <div style="margin-left:8px; display:flex; gap:4px;">
-                                        <button class="small-btn copy-entry-btn">复制</button>
+                                    <div class="entry-text">${escapeHtml(e.text)}</div>
+                                    <div style="margin-left:8px;">
                                         <button class="small-btn delete-entry-btn" style="color:#b91c1c;">删除</button>
                                     </div>
                                 </div>`;
                             }).join('');
-                            return `<div class="day-block">
-                                <div class="day-label">📅 ${day}</div>
-                                ${entriesHtml}
+                            return `<div class="day-block" data-day="${day}">
+                                <div class="day-label">
+                                    <span>📅 ${day}</span>
+                                    <button class="small-btn copy-day-btn">复制该天</button>
+                                </div>
+                                <div class="day-entries">${entriesHtml}</div>
                             </div>`;
                         }).join('');
                     } else {
                         daysHtml = '<div style="color:#94a3b8; font-size:13px;">暂无条目</div>';
                     }
-                    return `<div class="period-card" data-period-id="${period.id}">
+                    const periodId = period.id;
+                    return `<div class="period-card" data-period-id="${periodId}">
                         <div class="period-header">
                             <span>📁 ${rangeStr}</span>
-                            <button class="small-btn delete-period-btn" style="color:#b91c1c;">删除周期</button>
+                            <div class="period-header-buttons">
+                                <button class="small-btn copy-period-btn">复制本周全部</button>
+                                <button class="small-btn toggle-period-btn">收起</button>
+                                <button class="small-btn delete-period-btn" style="color:#b91c1c;">删除周期</button>
+                            </div>
                         </div>
-                        ${daysHtml}
+                        <div class="period-content">${daysHtml}</div>
                     </div>`;
                 }).join('');
 
-                document.querySelectorAll('.copy-entry-btn').forEach(btn => {
+                // 复制当天按钮
+                document.querySelectorAll('.copy-day-btn').forEach(btn => {
                     btn.addEventListener('click', function() {
-                        const entryItem = this.closest('.entry-item');
-                        const text = entryItem.querySelector('.entry-text').innerText;
-                        navigator.clipboard.writeText(text).then(() => alert('已复制'));
+                        const dayBlock = this.closest('.day-block');
+                        const entries = dayBlock.querySelectorAll('.entry-text');
+                        const texts = Array.from(entries).map(e => e.innerText).join('\n');
+                        navigator.clipboard.writeText(texts).then(() => alert('已复制当天内容'));
                     });
                 });
+
+                // 复制本周全部按钮
+                document.querySelectorAll('.copy-period-btn').forEach(btn => {
+                    btn.addEventListener('click', function() {
+                        const periodCard = this.closest('.period-card');
+                        const dayBlocks = periodCard.querySelectorAll('.day-block');
+                        let allText = '';
+                        dayBlocks.forEach(block => {
+                            const dayLabel = block.querySelector('.day-label span').innerText;
+                            const entries = block.querySelectorAll('.entry-text');
+                            const texts = Array.from(entries).map(e => e.innerText).join('\n');
+                            allText += `${dayLabel}\n${texts}\n\n`;
+                        });
+                        navigator.clipboard.writeText(allText.trim()).then(() => alert('已复制本周全部内容'));
+                    });
+                });
+
+                // 折叠/展开按钮
+                document.querySelectorAll('.toggle-period-btn').forEach(btn => {
+                    btn.addEventListener('click', function() {
+                        const periodCard = this.closest('.period-card');
+                        periodCard.classList.toggle('collapsed');
+                        if (periodCard.classList.contains('collapsed')) {
+                            this.textContent = '展开';
+                        } else {
+                            this.textContent = '收起';
+                        }
+                    });
+                });
+
+                // 删除单条
                 document.querySelectorAll('.delete-entry-btn').forEach(btn => {
                     btn.addEventListener('click', function() {
                         const entryItem = this.closest('.entry-item');
@@ -613,6 +650,8 @@
                         renderSavedReports();
                     });
                 });
+
+                // 删除周期
                 document.querySelectorAll('.delete-period-btn').forEach(btn => {
                     btn.addEventListener('click', function() {
                         const periodCard = this.closest('.period-card');
