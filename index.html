@@ -75,14 +75,12 @@
         }
         .btn-small { font-size: 14px; padding: 6px 12px; }
         .report-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
-        .history-item, .saved-item {
+        .history-item {
             border: 1px solid #e2e8f0; border-radius: 10px; padding: 10px; margin-bottom: 8px;
             background: #f8fafc; display: flex; align-items: flex-start; gap: 8px;
         }
-        .history-text, .saved-text {
-            flex:1; font-size:14px; white-space: pre-wrap; word-break: break-word;
-        }
-        .history-actions, .saved-actions { display: flex; gap: 4px; flex-shrink: 0; }
+        .history-text { flex:1; font-size:14px; white-space: pre-wrap; word-break: break-word; }
+        .history-actions { display: flex; gap: 4px; flex-shrink: 0; }
         .small-btn {
             font-size: 13px; padding: 4px 10px; border-radius: 8px; border:1px solid #cbd5e1;
             background: white; cursor: pointer;
@@ -90,21 +88,27 @@
         .small-btn:hover { background: #f1f5f9; }
         .date-status { font-size: 12px; margin-left: 8px; color: #64748b; }
         .date-status.locked { color: #059669; }
-        .saved-range { font-size: 12px; color: #475569; margin-bottom: 4px; }
-        .version-item {
-            border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px; margin-bottom: 6px;
-            background: #fff;
+        .period-card {
+            border: 1px solid #e2e8f0; border-radius: 10px; padding: 10px; margin-bottom: 12px;
+            background: #f8fafc;
         }
-        .version-header {
+        .period-header {
             display: flex; justify-content: space-between; align-items: center;
-            margin-bottom: 4px;
+            margin-bottom: 10px; font-weight: 600; font-size: 15px;
         }
-        .version-badge {
-            background: #dbeafe; color: #1e40af; font-size: 12px; padding: 2px 8px;
-            border-radius: 8px; font-weight: 500;
+        .day-block {
+            margin-bottom: 8px;
         }
-        .version-time { font-size: 11px; color: #64748b; }
-        .version-content { white-space: pre-wrap; font-size: 14px; }
+        .day-label {
+            font-weight: 600; font-size: 14px; margin-bottom: 4px;
+            padding-bottom: 4px; border-bottom: 1px dashed #e2e8f0;
+        }
+        .entry-item {
+            display: flex; justify-content: space-between; align-items: flex-start;
+            padding: 6px 0; border-bottom: 1px solid #f1f5f9;
+        }
+        .entry-text { flex: 1; font-size: 14px; white-space: pre-wrap; word-break: break-word; }
+        .entry-meta { font-size: 11px; color: #64748b; margin-bottom: 2px; }
     </style>
 </head>
 <body>
@@ -164,7 +168,6 @@
         <div class="report-area" id="reportArea" style="margin-top:12px;">选择日期范围后点击确定，再生成汇报</div>
         <button class="btn" id="copyBtn" style="margin-top:8px;">📋 复制当前显示</button>
         
-        <!-- 生成历史 -->
         <div id="historySection" style="margin-top:14px; display:none;">
             <div style="display:flex; justify-content:space-between; align-items:center;">
                 <strong style="font-size:15px;">🕒 最近生成历史</strong>
@@ -175,7 +178,7 @@
         </div>
     </div>
 
-    <!-- 已保存的汇报（周期卡片，内有多版本） -->
+    <!-- 已保存的汇报（周期卡片，内按天聚合） -->
     <div class="card" id="savedReportsCard">
         <h3 style="margin-bottom:8px; font-size:18px;">💾 已保存的汇报</h3>
         <div id="savedList">
@@ -186,7 +189,6 @@
 
     <script>
         (function() {
-            // ---------- 存储 ----------
             const RECORDS_KEY = 'weekly_records';
             const SETTINGS_KEY = 'weekly_ai_settings';
             const AI_HISTORY_KEY = 'ai_history';
@@ -264,7 +266,7 @@
                 return text.replace(/[&<>"']/g, m => map[m]);
             }
 
-            // ---------- 日期锁定逻辑 ----------
+            // ---------- 日期锁定 ----------
             let appliedStart = null;
             let appliedEnd = null;
 
@@ -299,7 +301,6 @@
                 });
             });
 
-            // ---------- 筛选记录 ----------
             function getFilteredRecords() {
                 if (appliedStart && appliedEnd) {
                     const start = new Date(appliedStart); start.setHours(0,0,0,0);
@@ -317,7 +318,6 @@
                 }
             }
 
-            // ---------- 普通生成汇报 ----------
             function generateReportText(records) {
                 if (!records || records.length === 0) return '所选范围内没有记录。';
                 let reportLines = [];
@@ -417,37 +417,62 @@
                 });
             }
 
-            // 选用历史记录（同周期追加版本，不覆盖）
+            // 解析AI汇报文本，提取每天的条目
+            function parseReportToDays(reportText) {
+                const days = {};
+                const lines = reportText.split('\n');
+                let currentDate = null;
+                for (const line of lines) {
+                    const trimmed = line.trim();
+                    const dateMatch = trimmed.match(/^【(\d{1,2}-\d{1,2}|\d{4}-\d{1,2}-\d{1,2})】/);
+                    if (dateMatch) {
+                        currentDate = dateMatch[1];
+                        if (!days[currentDate]) days[currentDate] = [];
+                        const rest = trimmed.replace(dateMatch[0], '').trim();
+                        if (rest) days[currentDate].push(rest);
+                    } else if (currentDate && trimmed) {
+                        days[currentDate].push(trimmed);
+                    }
+                }
+                return days;
+            }
+
+            // 选用历史记录：按周期 + 按天合并
             function selectHistory(id) {
                 const history = loadAIHistory();
                 const found = history.find(h => h.id === id);
                 if (!found) return;
+                const days = parseReportToDays(found.text);
+                if (Object.keys(days).length === 0) {
+                    alert('未能解析出日期条目，请检查AI输出格式');
+                    return;
+                }
                 let saved = loadSavedReports();
-                // 查找相同周期条目（仅当 appliedStart 和 appliedEnd 都有值时）
-                const existing = (appliedStart && appliedEnd) ? saved.find(s => s.startDate === appliedStart && s.endDate === appliedEnd) : null;
-                if (existing) {
-                    // 追加版本
-                    if (!existing.versions) existing.versions = [];
-                    const nextVersion = existing.versions.length + 1;
-                    existing.versions.push({
-                        id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-                        text: found.text,
-                        time: new Date().toISOString(),
-                        version: nextVersion
-                    });
-                } else {
-                    // 新建周期卡片
-                    saved.push({
-                        id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+                const now = new Date().toISOString();
+                // 查找相同周期的卡片（startDate 和 endDate 完全匹配）
+                let period = (appliedStart && appliedEnd) ? saved.find(p => p.startDate === appliedStart && p.endDate === appliedEnd) : null;
+                if (!period) {
+                    // 新建周期
+                    period = {
+                        id: Date.now().toString(36) + Math.random().toString(36).slice(2,6),
                         startDate: appliedStart,
                         endDate: appliedEnd,
-                        versions: [{
-                            id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-                            text: found.text,
-                            time: new Date().toISOString(),
-                            version: 1
-                        }]
-                    });
+                        days: {} // key: "MM-DD", value: [{id, text, time}]
+                    };
+                    saved.push(period);
+                }
+                // 确保 days 对象存在
+                if (!period.days) period.days = {};
+                // 按天追加条目
+                for (const [day, entries] of Object.entries(days)) {
+                    if (!period.days[day]) period.days[day] = [];
+                    for (const entry of entries) {
+                        period.days[day].push({
+                            id: Date.now().toString(36) + Math.random().toString(36).slice(2,6),
+                            text: entry,
+                            time: now
+                        });
+                    }
                 }
                 saveSavedReports(saved);
                 renderSavedReports();
@@ -461,7 +486,7 @@
                 }
             });
 
-            // ---------- 已保存汇报（周期卡片，展示所有版本） ----------
+            // ---------- 已保存汇报（周期卡片，内按天聚合） ----------
             function renderSavedReports() {
                 const saved = loadSavedReports();
                 const list = document.getElementById('savedList');
@@ -475,73 +500,82 @@
                     const dateB = b.startDate ? new Date(b.startDate) : new Date(0);
                     return dateB - dateA;
                 });
-                list.innerHTML = sorted.map(s => {
-                    const rangeStr = (s.startDate && s.endDate) ? `汇报周期: ${s.startDate} ~ ${s.endDate}` : '未锁定日期范围';
-                    let versionsHtml = '';
-                    if (s.versions && s.versions.length > 0) {
-                        // 版本按时间倒序（最新在前）
-                        const sortedVersions = [...s.versions].sort((a, b) => new Date(b.time) - new Date(a.time));
-                        versionsHtml = sortedVersions.map(v => {
-                            const vDate = new Date(v.time);
-                            const vTimeStr = `${vDate.getFullYear()}-${(vDate.getMonth()+1).toString().padStart(2,'0')}-${vDate.getDate().toString().padStart(2,'0')} ${vDate.getHours().toString().padStart(2,'0')}:${vDate.getMinutes().toString().padStart(2,'0')}`;
-                            return `<div class="version-item" data-version-id="${v.id}">
-                                <div class="version-header">
-                                    <span class="version-badge">v${v.version}</span>
-                                    <span class="version-time">${vTimeStr}</span>
-                                </div>
-                                <div class="version-content">${escapeHtml(v.text)}</div>
-                                <div style="margin-top:6px; display:flex; gap:6px;">
-                                    <button class="small-btn copy-version-btn">复制</button>
-                                    <button class="small-btn delete-version-btn" style="color:#b91c1c;">删除</button>
-                                </div>
+                list.innerHTML = sorted.map(period => {
+                    const rangeStr = (period.startDate && period.endDate) ? `${period.startDate} ~ ${period.endDate}` : '未锁定日期范围';
+                    let daysHtml = '';
+                    if (period.days && Object.keys(period.days).length > 0) {
+                        // 按日期降序排序
+                        const sortedDays = Object.keys(period.days).sort((a,b) => b.localeCompare(a));
+                        daysHtml = sortedDays.map(day => {
+                            const entries = period.days[day];
+                            // 按时间倒序
+                            const sortedEntries = [...entries].sort((a,b) => new Date(b.time) - new Date(a.time));
+                            let entriesHtml = sortedEntries.map(e => {
+                                const eDate = new Date(e.time);
+                                const eTimeStr = `${eDate.getMonth()+1}/${eDate.getDate()} ${eDate.getHours().toString().padStart(2,'0')}:${eDate.getMinutes().toString().padStart(2,'0')}`;
+                                return `<div class="entry-item" data-entry-id="${e.id}" data-day="${day}">
+                                    <div style="flex:1;">
+                                        <div class="entry-meta">添加于 ${eTimeStr}</div>
+                                        <div class="entry-text">${escapeHtml(e.text)}</div>
+                                    </div>
+                                    <div style="margin-left:8px; display:flex; gap:4px;">
+                                        <button class="small-btn copy-entry-btn">复制</button>
+                                        <button class="small-btn delete-entry-btn" style="color:#b91c1c;">删除</button>
+                                    </div>
+                                </div>`;
+                            }).join('');
+                            return `<div class="day-block">
+                                <div class="day-label">📅 ${day}</div>
+                                ${entriesHtml}
                             </div>`;
                         }).join('');
+                    } else {
+                        daysHtml = '<div style="color:#94a3b8; font-size:13px;">暂无条目</div>';
                     }
-                    return `<div class="saved-item" data-period-id="${s.id}">
-                        <div class="saved-text">
-                            <div class="saved-range">${rangeStr}</div>
-                            <div style="margin-top:6px;">${versionsHtml}</div>
-                        </div>
-                        <div class="saved-actions">
+                    return `<div class="period-card" data-period-id="${period.id}">
+                        <div class="period-header">
+                            <span>📁 ${rangeStr}</span>
                             <button class="small-btn delete-period-btn" style="color:#b91c1c;">删除周期</button>
                         </div>
+                        ${daysHtml}
                     </div>`;
                 }).join('');
 
-                // 绑定版本复制
-                document.querySelectorAll('.copy-version-btn').forEach(btn => {
+                // 绑定复制单条
+                document.querySelectorAll('.copy-entry-btn').forEach(btn => {
                     btn.addEventListener('click', function() {
-                        const versionItem = this.closest('.version-item');
-                        const content = versionItem.querySelector('.version-content').innerText;
-                        navigator.clipboard.writeText(content).then(() => alert('已复制'));
+                        const entryItem = this.closest('.entry-item');
+                        const text = entryItem.querySelector('.entry-text').innerText;
+                        navigator.clipboard.writeText(text).then(() => alert('已复制'));
                     });
                 });
-
-                // 绑定版本删除
-                document.querySelectorAll('.delete-version-btn').forEach(btn => {
+                // 绑定删除单条
+                document.querySelectorAll('.delete-entry-btn').forEach(btn => {
                     btn.addEventListener('click', function() {
-                        const versionItem = this.closest('.version-item');
-                        const versionId = versionItem.getAttribute('data-version-id');
-                        const periodItem = this.closest('.saved-item');
-                        const periodId = periodItem.getAttribute('data-period-id');
+                        const entryItem = this.closest('.entry-item');
+                        const entryId = entryItem.getAttribute('data-entry-id');
+                        const day = entryItem.getAttribute('data-day');
+                        const periodCard = this.closest('.period-card');
+                        const periodId = periodCard.getAttribute('data-period-id');
                         let saved = loadSavedReports();
                         const period = saved.find(p => p.id === periodId);
-                        if (!period) return;
-                        period.versions = period.versions.filter(v => v.id !== versionId);
-                        if (period.versions.length === 0) {
-                            // 删除整个周期
+                        if (!period || !period.days) return;
+                        period.days[day] = period.days[day].filter(e => e.id !== entryId);
+                        if (period.days[day].length === 0) {
+                            delete period.days[day];
+                        }
+                        if (Object.keys(period.days).length === 0) {
                             saved = saved.filter(p => p.id !== periodId);
                         }
                         saveSavedReports(saved);
                         renderSavedReports();
                     });
                 });
-
-                // 绑定周期删除
+                // 绑定删除周期
                 document.querySelectorAll('.delete-period-btn').forEach(btn => {
                     btn.addEventListener('click', function() {
-                        const periodItem = this.closest('.saved-item');
-                        const periodId = periodItem.getAttribute('data-period-id');
+                        const periodCard = this.closest('.period-card');
+                        const periodId = periodCard.getAttribute('data-period-id');
                         let saved = loadSavedReports().filter(p => p.id !== periodId);
                         saveSavedReports(saved);
                         renderSavedReports();
@@ -627,7 +661,6 @@ ${rawList}`;
                 }
             }
 
-            // 复制当前显示区域
             function copyCurrent() {
                 const text = document.getElementById('reportArea').textContent;
                 if (!text || text.includes('请选择') || text.includes('没有记录') || text.includes('正在提炼')) {
@@ -669,7 +702,6 @@ ${rawList}`;
                 document.getElementById('endDate').value = format(sunday);
             }
 
-            // 初始化
             setDefaultDateRange();
             updateDateStatus();
             renderRecordList();
