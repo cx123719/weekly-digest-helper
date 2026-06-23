@@ -92,6 +92,7 @@
         .selected-indicator { color: #059669; font-weight: bold; margin-left: 6px; }
         .date-status { font-size: 12px; margin-left: 8px; color: #64748b; }
         .date-status.locked { color: #059669; }
+        .saved-range { font-size: 12px; color: #475569; margin-bottom: 4px; }
     </style>
 </head>
 <body>
@@ -412,10 +413,13 @@
                 const found = history.find(h => h.id === id);
                 if (!found) return;
                 const saved = loadSavedReports();
-                saved.unshift({
+                // 保存时记录当前锁定的日期范围
+                saved.push({
                     id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
                     text: found.text,
-                    time: new Date().toISOString()
+                    time: new Date().toISOString(),      // 选用时间
+                    startDate: appliedStart,              // 汇报对应起始日期
+                    endDate: appliedEnd                   // 汇报对应结束日期
                 });
                 saveSavedReports(saved);
                 renderSavedReports();
@@ -429,44 +433,51 @@
                 }
             });
 
-            // ---------- 已保存汇报 ----------
+            // ---------- 已保存汇报（按日期范围排序） ----------
             function renderSavedReports() {
                 const saved = loadSavedReports();
                 const list = document.getElementById('savedList');
                 if (saved.length === 0) {
                     list.innerHTML = '<div class="empty-message">暂无保存的汇报</div>';
-                } else {
-                    list.innerHTML = saved.map(s => {
-                        const d = new Date(s.time);
-                        const timeStr = `${d.getFullYear()}-${(d.getMonth()+1).toString().padStart(2,'0')}-${d.getDate().toString().padStart(2,'0')} ${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`;
-                        return `<div class="saved-item" data-id="${s.id}">
-                            <div class="saved-text">
-                                <div style="font-size:12px; color:#64748b;">保存于 ${timeStr}</div>
-                                <div style="white-space:pre-wrap;">${escapeHtml(s.text)}</div>
-                            </div>
-                            <div class="saved-actions">
-                                <button class="small-btn copy-saved-btn">复制</button>
-                                <button class="small-btn delete-saved-btn" style="color:#b91c1c;">删除</button>
-                            </div>
-                        </div>`;
-                    }).join('');
-                    document.querySelectorAll('.copy-saved-btn').forEach(btn => {
-                        btn.addEventListener('click', function() {
-                            const item = this.closest('.saved-item');
-                            const text = item.querySelector('.saved-text div:last-child').innerText;
-                            navigator.clipboard.writeText(text).then(() => alert('已复制'));
-                        });
-                    });
-                    document.querySelectorAll('.delete-saved-btn').forEach(btn => {
-                        btn.addEventListener('click', function() {
-                            const item = this.closest('.saved-item');
-                            const id = item.getAttribute('data-id');
-                            let saved = loadSavedReports().filter(s => s.id !== id);
-                            saveSavedReports(saved);
-                            renderSavedReports();
-                        });
-                    });
+                    return;
                 }
+                // 按 startDate 降序排列（最新的周期在前面）
+                const sorted = [...saved].sort((a, b) => {
+                    const dateA = a.startDate ? new Date(a.startDate) : new Date(0);
+                    const dateB = b.startDate ? new Date(b.startDate) : new Date(0);
+                    return dateB - dateA;
+                });
+                list.innerHTML = sorted.map(s => {
+                    const rangeStr = (s.startDate && s.endDate) ? `汇报周期: ${s.startDate} ~ ${s.endDate}` : '未锁定日期范围';
+                    return `<div class="saved-item" data-id="${s.id}">
+                        <div class="saved-text">
+                            <div class="saved-range">${rangeStr}</div>
+                            <div style="white-space:pre-wrap;">${escapeHtml(s.text)}</div>
+                        </div>
+                        <div class="saved-actions">
+                            <button class="small-btn copy-saved-btn">复制</button>
+                            <button class="small-btn delete-saved-btn" style="color:#b91c1c;">删除</button>
+                        </div>
+                    </div>`;
+                }).join('');
+                // 复制按钮
+                document.querySelectorAll('.copy-saved-btn').forEach(btn => {
+                    btn.addEventListener('click', function() {
+                        const item = this.closest('.saved-item');
+                        const text = item.querySelector('.saved-text div:last-child').innerText;
+                        navigator.clipboard.writeText(text).then(() => alert('已复制'));
+                    });
+                });
+                // 删除按钮
+                document.querySelectorAll('.delete-saved-btn').forEach(btn => {
+                    btn.addEventListener('click', function() {
+                        const item = this.closest('.saved-item');
+                        const id = item.getAttribute('data-id');
+                        let saved = loadSavedReports().filter(s => s.id !== id);
+                        saveSavedReports(saved);
+                        renderSavedReports();
+                    });
+                });
             }
 
             document.getElementById('clearSavedBtn').addEventListener('click', function() {
