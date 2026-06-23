@@ -346,7 +346,6 @@
                 if (records === null) { reportArea.textContent = '日期范围不正确。'; return; }
                 const text = generateReportText(records);
                 reportArea.textContent = text;
-                // 显示选用按钮
                 document.getElementById('saveCurrentRow').style.display = 'flex';
             }
 
@@ -423,35 +422,28 @@
                 });
             }
 
-            // 增强的解析函数：从文本中提取形如 【06-23】 或 【2026-06-23】 的日期分组
+            // 增强解析：提取【MM-DD】或【YYYY-MM-DD】
             function parseReportToDays(reportText) {
                 const days = {};
-                // 先清理文本：将多个破折号替换为单个破折号，避免【06--22】的情况
-                let cleaned = reportText.replace(/【\s*(\d{1,2})-{2,}(\d{1,2})\s*】/g, (match, m, d) => `【${m}-${d}】`);
+                let cleaned = reportText.replace(/【\s*(\d{1,2})-{2,}(\d{1,2})\s*】/g, (m, a, b) => `【${a}-${b}】`);
                 const lines = cleaned.split('\n');
                 let currentDate = null;
-                // 匹配【MM-DD】或【YYYY-MM-DD】，允许有空格，后面可以紧跟其他字符
                 const dateRegex = /^【\s*(\d{1,2}-\d{1,2}|\d{4}-\d{1,2}-\d{1,2})\s*】/;
                 for (const line of lines) {
                     const trimmed = line.trim();
                     const dateMatch = trimmed.match(dateRegex);
                     if (dateMatch) {
-                        // 提取日期，若为YYYY-MM-DD，只保留MM-DD
                         let datePart = dateMatch[1];
-                        if (datePart.length > 5) {
-                            datePart = datePart.slice(5); // "MM-DD"
-                        }
+                        if (datePart.length > 5) datePart = datePart.slice(5);
                         currentDate = datePart;
                         if (!days[currentDate]) days[currentDate] = [];
-                        // 去除日期标记后的剩余内容作为第一条
                         const rest = trimmed.replace(dateMatch[0], '').trim();
                         if (rest) days[currentDate].push(rest);
                     } else if (currentDate && trimmed) {
-                        // 非日期行，归属当前日期
                         days[currentDate].push(trimmed);
                     }
                 }
-                // 如果没有解析到任何日期，尝试宽松匹配：寻找所有形如 【数字-数字】 的片段
+                // 宽松匹配
                 if (Object.keys(days).length === 0) {
                     const globalRegex = /【\s*(\d{1,2}-\d{1,2}|\d{4}-\d{1,2}-\d{1,2})\s*】/g;
                     let m;
@@ -459,7 +451,6 @@
                         let datePart = m[1];
                         if (datePart.length > 5) datePart = datePart.slice(5);
                         if (!days[datePart]) days[datePart] = [];
-                        // 找出该日期之后到下一个日期之前的文本作为该日期的条目
                         const start = m.index + m[0].length;
                         const nextMatch = globalRegex.exec(cleaned);
                         let end = nextMatch ? nextMatch.index : cleaned.length;
@@ -470,14 +461,13 @@
                                 if (trimmed) days[datePart].push(trimmed);
                             });
                         }
-                        // 回退位置以便继续匹配
                         globalRegex.lastIndex = end;
                     }
                 }
                 return days;
             }
 
-            // 选用历史记录（或直接选用当前报告区内容）
+            // 选用历史记录
             function selectHistory(id) {
                 const history = loadAIHistory();
                 const found = history.find(h => h.id === id);
@@ -485,7 +475,7 @@
                 saveReportText(found.text);
             }
 
-            // 保存当前报告区的内容
+            // 选用当前报告区内容
             function saveCurrentReport() {
                 const text = document.getElementById('reportArea').textContent;
                 if (!text || text.includes('请选择') || text.includes('没有记录') || text.includes('正在提炼')) {
@@ -495,13 +485,9 @@
                 saveReportText(text);
             }
 
-            // 核心保存函数
+            // 核心保存：优先按天拆分，否则存为“汇总”
             function saveReportText(text) {
                 let days = parseReportToDays(text);
-                if (Object.keys(days).length === 0) {
-                    alert('内容中未检测到日期标记（如【06-23】），无法按天保存。\n请确保输出包含形如【06-23】的日期行。');
-                    return;
-                }
                 let saved = loadSavedReports();
                 const now = new Date().toISOString();
                 let period = (appliedStart && appliedEnd) ? saved.find(p => p.startDate === appliedStart && p.endDate === appliedEnd) : null;
@@ -515,16 +501,30 @@
                     saved.push(period);
                 }
                 if (!period.days) period.days = {};
-                for (const [day, entries] of Object.entries(days)) {
-                    if (!period.days[day]) period.days[day] = [];
-                    for (const entry of entries) {
-                        period.days[day].push({
-                            id: Date.now().toString(36) + Math.random().toString(36).slice(2,6),
-                            text: entry,
-                            time: now
-                        });
+
+                if (Object.keys(days).length > 0) {
+                    // 有日期分组，追加到对应天
+                    for (const [day, entries] of Object.entries(days)) {
+                        if (!period.days[day]) period.days[day] = [];
+                        for (const entry of entries) {
+                            period.days[day].push({
+                                id: Date.now().toString(36) + Math.random().toString(36).slice(2,6),
+                                text: entry,
+                                time: now
+                            });
+                        }
                     }
+                } else {
+                    // 没有日期标记，整个文本存为“汇总”条目
+                    const summaryKey = '汇总';
+                    if (!period.days[summaryKey]) period.days[summaryKey] = [];
+                    period.days[summaryKey].push({
+                        id: Date.now().toString(36) + Math.random().toString(36).slice(2,6),
+                        text: text,
+                        time: now
+                    });
                 }
+
                 saveSavedReports(saved);
                 renderSavedReports();
                 alert('已保存选用结果');
@@ -607,12 +607,8 @@
                         const period = saved.find(p => p.id === periodId);
                         if (!period || !period.days) return;
                         period.days[day] = period.days[day].filter(e => e.id !== entryId);
-                        if (period.days[day].length === 0) {
-                            delete period.days[day];
-                        }
-                        if (Object.keys(period.days).length === 0) {
-                            saved = saved.filter(p => p.id !== periodId);
-                        }
+                        if (period.days[day].length === 0) delete period.days[day];
+                        if (Object.keys(period.days).length === 0) saved = saved.filter(p => p.id !== periodId);
                         saveSavedReports(saved);
                         renderSavedReports();
                     });
@@ -736,8 +732,6 @@ ${rawList}`;
             document.getElementById('generateBtn').addEventListener('click', generateNormalReport);
             document.getElementById('aiGenerateBtn').addEventListener('click', generateAIReport);
             document.getElementById('copyBtn').addEventListener('click', copyCurrent);
-
-            // 选用当前结果按钮
             document.getElementById('saveCurrentBtn').addEventListener('click', saveCurrentReport);
 
             function setDefaultDateRange() {
