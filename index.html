@@ -427,20 +427,26 @@
                 });
             }
 
-            // 增强解析：提取【MM-DD】或【YYYY-MM-DD】
+            // 增强的解析函数，预处理全角括号、多余破折号等
             function parseReportToDays(reportText) {
                 const days = {};
-                let cleaned = reportText.replace(/【\s*(\d{1,2})-{2,}(\d{1,2})\s*】/g, (m, a, b) => `【${a}-${b}】`);
+                // 全角括号替换为半角
+                let cleaned = reportText.replace(/［/g, '【').replace(/］/g, '】');
+                // 修复多余破折号：06--22 -> 06-22
+                cleaned = cleaned.replace(/【\s*(\d{1,2})-{2,}(\d{1,2})\s*】/g, (m, a, b) => `【${a}-${b}】`);
+                // 修复只有一位数字的月份日期，补齐两位：如【6-5】 -> 【06-05】
+                cleaned = cleaned.replace(/【\s*(\d{1,2})-(\d{1,2})\s*】/g, (m, a, b) => {
+                    return `【${a.padStart(2, '0')}-${b.padStart(2, '0')}】`;
+                });
+
                 const lines = cleaned.split('\n');
                 let currentDate = null;
-                const dateRegex = /^【\s*(\d{1,2}-\d{1,2}|\d{4}-\d{1,2}-\d{1,2})\s*】/;
+                const dateRegex = /^【\s*(\d{2}-\d{2})\s*】/;  // 严格的两位格式
                 for (const line of lines) {
                     const trimmed = line.trim();
                     const dateMatch = trimmed.match(dateRegex);
                     if (dateMatch) {
-                        let datePart = dateMatch[1];
-                        if (datePart.length > 5) datePart = datePart.slice(5);
-                        currentDate = datePart;
+                        currentDate = dateMatch[1];
                         if (!days[currentDate]) days[currentDate] = [];
                         const rest = trimmed.replace(dateMatch[0], '').trim();
                         if (rest) days[currentDate].push(rest);
@@ -448,12 +454,13 @@
                         days[currentDate].push(trimmed);
                     }
                 }
+
+                // 如果仍然没有，宽松全局匹配
                 if (Object.keys(days).length === 0) {
-                    const globalRegex = /【\s*(\d{1,2}-\d{1,2}|\d{4}-\d{1,2}-\d{1,2})\s*】/g;
+                    const globalRegex = /【\s*(\d{2}-\d{2})\s*】/g;
                     let m;
                     while ((m = globalRegex.exec(cleaned)) !== null) {
                         let datePart = m[1];
-                        if (datePart.length > 5) datePart = datePart.slice(5);
                         if (!days[datePart]) days[datePart] = [];
                         const start = m.index + m[0].length;
                         const nextMatch = globalRegex.exec(cleaned);
@@ -468,6 +475,7 @@
                         globalRegex.lastIndex = end;
                     }
                 }
+
                 return days;
             }
 
@@ -489,7 +497,7 @@
                 saveReportText(text);
             }
 
-            // 核心保存
+            // 核心保存：解析到日期则按天保存，否则整个存为“汇总”
             function saveReportText(text) {
                 let days = parseReportToDays(text);
                 let saved = loadSavedReports();
@@ -539,7 +547,7 @@
                 }
             });
 
-            // ---------- 已保存汇报（优化后） ----------
+            // ---------- 已保存汇报（界面保持不变） ----------
             function renderSavedReports() {
                 const saved = loadSavedReports();
                 const list = document.getElementById('savedList');
@@ -591,9 +599,8 @@
                         </div>
                         <div class="period-content">${daysHtml}</div>
                     </div>`;
-                }).join('');
+                }).join();
 
-                // 复制当天按钮
                 document.querySelectorAll('.copy-day-btn').forEach(btn => {
                     btn.addEventListener('click', function() {
                         const dayBlock = this.closest('.day-block');
@@ -603,7 +610,6 @@
                     });
                 });
 
-                // 复制本周全部按钮
                 document.querySelectorAll('.copy-period-btn').forEach(btn => {
                     btn.addEventListener('click', function() {
                         const periodCard = this.closest('.period-card');
@@ -619,7 +625,6 @@
                     });
                 });
 
-                // 折叠/展开按钮
                 document.querySelectorAll('.toggle-period-btn').forEach(btn => {
                     btn.addEventListener('click', function() {
                         const periodCard = this.closest('.period-card');
@@ -632,7 +637,6 @@
                     });
                 });
 
-                // 删除单条
                 document.querySelectorAll('.delete-entry-btn').forEach(btn => {
                     btn.addEventListener('click', function() {
                         const entryItem = this.closest('.entry-item');
@@ -651,7 +655,6 @@
                     });
                 });
 
-                // 删除周期
                 document.querySelectorAll('.delete-period-btn').forEach(btn => {
                     btn.addEventListener('click', function() {
                         const periodCard = this.closest('.period-card');
@@ -670,7 +673,7 @@
                 }
             });
 
-            // ---------- AI 提炼（已优化提示词和温度） ----------
+            // ---------- AI 提炼（强化日期约束） ----------
             async function generateAIReport() {
                 const records = getFilteredRecords();
                 const reportArea = document.getElementById('reportArea');
@@ -694,11 +697,11 @@
                 }).join('\n');
 
                 const prompt = `你是一名政府部门的办公室主任，负责撰写每周工作总结，供领导班子审阅。请根据以下日常零星工作记录，整理成一份正式的周工作汇报，要求：
-1. 必须按日期分组，每个日期用【MM-DD】（如【06-23】）独占一行作为标题，然后另起一行列出该日的主要工作条目。
-2. 用规范、简练的公文语言提炼工作内容；如果原始记录已经足够正式，只需微调措辞，严禁添加任何原文中没有的事实或夸大性描述。
-3. 每条工作单独一行，以“1.”“2.”等开头，如果原始记录有序号则保留原序号。
-4. 只输出汇报正文，不要加任何标题、引言或结尾落款，也不要添加任何解释性文字。
-5. 严格遵循以上格式，保持输出整洁。
+1. 必须按日期分组，每个日期用【MM-DD】独占一行作为标题（月份和日期都必须为两位数字，如【06-23】），然后另起一行列出该日的主要工作条目。
+2. 严格使用每条记录前面方括号内提供的日期，不要自行更改或编造日期。
+3. 用规范、简练的公文语言提炼工作内容；如果原始记录已经足够正式，只需微调措辞，严禁添加任何原文中没有的事实或夸大性描述。
+4. 每条工作单独一行，以“1.”“2.”等开头，如果原始记录有序号则保留原序号。
+5. 只输出汇报正文，不要加任何标题、引言或结尾落款，也不要添加任何解释性文字。
 
 原始记录：
 ${rawList}`;
