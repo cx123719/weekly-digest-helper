@@ -32,7 +32,6 @@
         .btn-primary:hover { background: #4f46e5; }
         .btn-danger { background: #fee2e2; color: #b91c1c; }
         .btn-danger:hover { background: #fecaca; }
-        .mic-btn { background: #dbeafe; color: #1e40af; font-size: 20px; padding: 8px 14px; }
         .record-list { list-style: none; margin-bottom: 12px; }
         .record-item {
             display: flex; justify-content: space-between; align-items: flex-start;
@@ -93,6 +92,11 @@
         .date-status { font-size: 12px; margin-left: 8px; color: #64748b; }
         .date-status.locked { color: #059669; }
         .saved-range { font-size: 12px; color: #475569; margin-bottom: 4px; }
+        .version-badge {
+            display: inline-block; background: #dbeafe; color: #1e40af;
+            font-size: 11px; padding: 1px 6px; border-radius: 8px; margin-left: 6px;
+            font-weight: 500;
+        }
     </style>
 </head>
 <body>
@@ -104,7 +108,6 @@
         <div class="input-row">
             <input type="text" id="textInput" placeholder="做了什么事？例如：整理Q2用户反馈数据" autofocus>
             <button class="btn btn-primary" id="addBtn">➕ 添加</button>
-            <!-- 麦克风按钮已隐藏，手机端请使用输入法语音 -->
         </div>
         <div style="font-size:13px; color:#64748b; margin-top:4px;">
             💡 打字回车或点击添加<br><span style="font-size:12px; color:#94a3b8;">📱 手机端推荐使用输入法自带的语音输入</span>
@@ -153,7 +156,7 @@
         <div class="report-area" id="reportArea" style="margin-top:12px;">选择日期范围后点击确定，再生成汇报</div>
         <button class="btn" id="copyBtn" style="margin-top:8px;">📋 复制当前显示</button>
         
-        <!-- 生成历史（AI多次结果） -->
+        <!-- 生成历史 -->
         <div id="historySection" style="margin-top:14px; display:none;">
             <div style="display:flex; justify-content:space-between; align-items:center;">
                 <strong style="font-size:15px;">🕒 最近生成历史</strong>
@@ -164,7 +167,7 @@
         </div>
     </div>
 
-    <!-- 已保存的汇报 -->
+    <!-- 已保存的汇报（合并同周期） -->
     <div class="card" id="savedReportsCard">
         <h3 style="margin-bottom:8px; font-size:18px;">💾 已保存的汇报</h3>
         <div id="savedList">
@@ -280,7 +283,6 @@
                 updateDateStatus();
             });
 
-            // 日期输入框变化时，解除锁定
             ['startDate','endDate'].forEach(id => {
                 document.getElementById(id).addEventListener('change', function() {
                     appliedStart = null;
@@ -301,7 +303,6 @@
                         return t >= start && t <= end;
                     }).sort((a, b) => new Date(a.time) - new Date(b.time));
                 } else {
-                    // 未锁定，使用全部记录，按时间升序
                     let records = loadRecords();
                     if (records.length === 0) return [];
                     return records.sort((a, b) => new Date(a.time) - new Date(b.time));
@@ -408,19 +409,30 @@
                 });
             }
 
+            // 选用历史记录（合并同周期）
             function selectHistory(id) {
                 const history = loadAIHistory();
                 const found = history.find(h => h.id === id);
                 if (!found) return;
-                const saved = loadSavedReports();
-                // 保存时记录当前锁定的日期范围
-                saved.push({
-                    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-                    text: found.text,
-                    time: new Date().toISOString(),      // 选用时间
-                    startDate: appliedStart,              // 汇报对应起始日期
-                    endDate: appliedEnd                   // 汇报对应结束日期
-                });
+                let saved = loadSavedReports();
+                // 查找是否有相同的日期范围（仅当 appliedStart 和 appliedEnd 都有值时合并）
+                const existingIndex = (appliedStart && appliedEnd) ? saved.findIndex(s => s.startDate === appliedStart && s.endDate === appliedEnd) : -1;
+                if (existingIndex !== -1) {
+                    // 更新已有条目：替换文本、更新时间、增加版本号
+                    saved[existingIndex].text = found.text;
+                    saved[existingIndex].time = new Date().toISOString();
+                    saved[existingIndex].version = (saved[existingIndex].version || 1) + 1;
+                } else {
+                    // 新增条目
+                    saved.push({
+                        id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+                        text: found.text,
+                        time: new Date().toISOString(),
+                        startDate: appliedStart,
+                        endDate: appliedEnd,
+                        version: 1
+                    });
+                }
                 saveSavedReports(saved);
                 renderSavedReports();
                 alert('已保存选用结果');
@@ -433,7 +445,7 @@
                 }
             });
 
-            // ---------- 已保存汇报（按日期范围排序） ----------
+            // ---------- 已保存汇报（合并同周期，显示版本） ----------
             function renderSavedReports() {
                 const saved = loadSavedReports();
                 const list = document.getElementById('savedList');
@@ -441,7 +453,7 @@
                     list.innerHTML = '<div class="empty-message">暂无保存的汇报</div>';
                     return;
                 }
-                // 按 startDate 降序排列（最新的周期在前面）
+                // 按 startDate 降序排列
                 const sorted = [...saved].sort((a, b) => {
                     const dateA = a.startDate ? new Date(a.startDate) : new Date(0);
                     const dateB = b.startDate ? new Date(b.startDate) : new Date(0);
@@ -449,9 +461,12 @@
                 });
                 list.innerHTML = sorted.map(s => {
                     const rangeStr = (s.startDate && s.endDate) ? `汇报周期: ${s.startDate} ~ ${s.endDate}` : '未锁定日期范围';
+                    const versionBadge = s.version && s.version > 1 ? `<span class="version-badge">v${s.version}</span>` : '';
+                    const d = new Date(s.time);
+                    const timeStr = `${d.getFullYear()}-${(d.getMonth()+1).toString().padStart(2,'0')}-${d.getDate().toString().padStart(2,'0')} ${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`;
                     return `<div class="saved-item" data-id="${s.id}">
                         <div class="saved-text">
-                            <div class="saved-range">${rangeStr}</div>
+                            <div class="saved-range">${rangeStr} <span style="font-size:12px; color:#64748b;">更新于 ${timeStr}</span>${versionBadge}</div>
                             <div style="white-space:pre-wrap;">${escapeHtml(s.text)}</div>
                         </div>
                         <div class="saved-actions">
@@ -487,7 +502,7 @@
                 }
             });
 
-            // ---------- AI 提炼（使用你修改后的提示词）----------
+            // ---------- AI 提炼 ----------
             async function generateAIReport() {
                 const records = getFilteredRecords();
                 const reportArea = document.getElementById('reportArea');
@@ -588,7 +603,6 @@ ${rawList}`;
             document.getElementById('aiGenerateBtn').addEventListener('click', generateAIReport);
             document.getElementById('copyBtn').addEventListener('click', copyCurrent);
 
-            // 默认日期范围（仅显示，不锁定）
             function setDefaultDateRange() {
                 const now = new Date();
                 const dayOfWeek = now.getDay();
@@ -603,7 +617,7 @@ ${rawList}`;
 
             // 初始化
             setDefaultDateRange();
-            updateDateStatus(); // 显示未锁定
+            updateDateStatus();
             renderRecordList();
             applySettingsToForm();
             renderHistory();
