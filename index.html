@@ -107,6 +107,7 @@
         }
         .entry-text { flex: 1; font-size: 14px; white-space: pre-wrap; word-break: break-word; }
         .entry-meta { font-size: 11px; color: #64748b; margin-bottom: 2px; }
+        .save-current-row { margin-top: 8px; display: flex; gap: 8px; align-items: center; }
     </style>
 </head>
 <body>
@@ -164,6 +165,10 @@
             <button class="btn btn-primary" id="aiGenerateBtn">✨ AI 提炼</button>
         </div>
         <div class="report-area" id="reportArea" style="margin-top:12px;">选择日期范围后点击确定，再生成汇报</div>
+        <div class="save-current-row" id="saveCurrentRow" style="display:none;">
+            <button class="btn btn-primary btn-small" id="saveCurrentBtn">💾 选用当前结果</button>
+            <span style="font-size:12px; color:#64748b;">点击后将按日期自动保存到已保存汇报</span>
+        </div>
         <button class="btn" id="copyBtn" style="margin-top:8px;">📋 复制当前显示</button>
         
         <div id="historySection" style="margin-top:14px; display:none;">
@@ -339,7 +344,10 @@
                 const records = getFilteredRecords();
                 const reportArea = document.getElementById('reportArea');
                 if (records === null) { reportArea.textContent = '日期范围不正确。'; return; }
-                reportArea.textContent = generateReportText(records);
+                const text = generateReportText(records);
+                reportArea.textContent = text;
+                // 显示选用按钮
+                document.getElementById('saveCurrentRow').style.display = 'flex';
             }
 
             // ---------- AI 设置 ----------
@@ -415,41 +423,85 @@
                 });
             }
 
-            // 增强的解析函数：支持 【MM-DD】、【M-D】、【YYYY-MM-DD】等
+            // 增强的解析函数：从文本中提取形如 【06-23】 或 【2026-06-23】 的日期分组
             function parseReportToDays(reportText) {
                 const days = {};
-                const lines = reportText.split('\n');
+                // 先清理文本：将多个破折号替换为单个破折号，避免【06--22】的情况
+                let cleaned = reportText.replace(/【\s*(\d{1,2})-{2,}(\d{1,2})\s*】/g, (match, m, d) => `【${m}-${d}】`);
+                const lines = cleaned.split('\n');
                 let currentDate = null;
-                // 匹配各种格式的日期标记
+                // 匹配【MM-DD】或【YYYY-MM-DD】，允许有空格，后面可以紧跟其他字符
                 const dateRegex = /^【\s*(\d{1,2}-\d{1,2}|\d{4}-\d{1,2}-\d{1,2})\s*】/;
                 for (const line of lines) {
                     const trimmed = line.trim();
                     const dateMatch = trimmed.match(dateRegex);
                     if (dateMatch) {
-                        currentDate = dateMatch[1];
+                        // 提取日期，若为YYYY-MM-DD，只保留MM-DD
+                        let datePart = dateMatch[1];
+                        if (datePart.length > 5) {
+                            datePart = datePart.slice(5); // "MM-DD"
+                        }
+                        currentDate = datePart;
                         if (!days[currentDate]) days[currentDate] = [];
+                        // 去除日期标记后的剩余内容作为第一条
                         const rest = trimmed.replace(dateMatch[0], '').trim();
                         if (rest) days[currentDate].push(rest);
                     } else if (currentDate && trimmed) {
+                        // 非日期行，归属当前日期
                         days[currentDate].push(trimmed);
+                    }
+                }
+                // 如果没有解析到任何日期，尝试宽松匹配：寻找所有形如 【数字-数字】 的片段
+                if (Object.keys(days).length === 0) {
+                    const globalRegex = /【\s*(\d{1,2}-\d{1,2}|\d{4}-\d{1,2}-\d{1,2})\s*】/g;
+                    let m;
+                    while ((m = globalRegex.exec(cleaned)) !== null) {
+                        let datePart = m[1];
+                        if (datePart.length > 5) datePart = datePart.slice(5);
+                        if (!days[datePart]) days[datePart] = [];
+                        // 找出该日期之后到下一个日期之前的文本作为该日期的条目
+                        const start = m.index + m[0].length;
+                        const nextMatch = globalRegex.exec(cleaned);
+                        let end = nextMatch ? nextMatch.index : cleaned.length;
+                        const section = cleaned.substring(start, end).trim();
+                        if (section) {
+                            section.split('\n').forEach(s => {
+                                const trimmed = s.trim();
+                                if (trimmed) days[datePart].push(trimmed);
+                            });
+                        }
+                        // 回退位置以便继续匹配
+                        globalRegex.lastIndex = end;
                     }
                 }
                 return days;
             }
 
-            // 选用历史记录：按周期 + 按天合并
+            // 选用历史记录（或直接选用当前报告区内容）
             function selectHistory(id) {
                 const history = loadAIHistory();
                 const found = history.find(h => h.id === id);
                 if (!found) return;
-                let days = parseReportToDays(found.text);
-                
-                // 如果解析失败，提示用户
-                if (Object.keys(days).length === 0) {
-                    alert('AI 输出未包含日期标记（如【06-15】）。\n请在 AI 提示词中确保要求“按日期分组，格式为【MM-DD】”。\n\n当前输出前100字：\n' + found.text.substring(0, 100));
+                saveReportText(found.text);
+            }
+
+            // 保存当前报告区的内容
+            function saveCurrentReport() {
+                const text = document.getElementById('reportArea').textContent;
+                if (!text || text.includes('请选择') || text.includes('没有记录') || text.includes('正在提炼')) {
+                    alert('没有可保存的内容');
                     return;
                 }
-                
+                saveReportText(text);
+            }
+
+            // 核心保存函数
+            function saveReportText(text) {
+                let days = parseReportToDays(text);
+                if (Object.keys(days).length === 0) {
+                    alert('内容中未检测到日期标记（如【06-23】），无法按天保存。\n请确保输出包含形如【06-23】的日期行。');
+                    return;
+                }
                 let saved = loadSavedReports();
                 const now = new Date().toISOString();
                 let period = (appliedStart && appliedEnd) ? saved.find(p => p.startDate === appliedStart && p.endDate === appliedEnd) : null;
@@ -485,7 +537,7 @@
                 }
             });
 
-            // ---------- 已保存汇报（周期卡片，内按天聚合） ----------
+            // ---------- 已保存汇报 ----------
             function renderSavedReports() {
                 const saved = loadSavedReports();
                 const list = document.getElementById('savedList');
@@ -583,7 +635,7 @@
                 }
             });
 
-            // ---------- AI 提炼（已加入日期分组要求）----------
+            // ---------- AI 提炼 ----------
             async function generateAIReport() {
                 const records = getFilteredRecords();
                 const reportArea = document.getElementById('reportArea');
@@ -606,13 +658,12 @@
                     return `[${dateStr}] ${r.text}`;
                 }).join('\n');
 
-                // 修正后的提示词，包含日期分组要求
                 const prompt = `你是一名政府部门的办公室主任，负责撰写每周工作总结，供领导班子审阅。请根据以下日常零星工作记录，整理成一份正式的周工作汇报，要求：
-1. 按日期分组，每组开头用格式【MM-DD】（如【06-15】）标出日期，然后列出该日的主要工作条目。
-2. 用规范、简练的公文语言提炼出主要工作；每条按照原先的序号，不改变序号（如果有序号的话）或者（没有序号的话，智能识别内容进行编序号开头）；新的序号另起一行，前后序号的样式要一致。
-3. 内容上要体现工作的落实情况、推进进度和协调对接情况，避免口语化和流水账，突出工作实效和下一步打算。
+1. 按日期分组，每组开头用格式【MM-DD】（如【06-23】）标出日期，然后列出该日的主要工作条目。
+2. 用规范、简练的公文语言提炼出主要工作；如果原始内容已比较完善，只需适当优化措辞，严禁无中生有或过度扩写。
+3. 内容上要体现工作的落实情况、推进进度和协调对接情况，避免口语化和流水账，突出工作实效。
 4. 整体语气庄重、平实，符合机关行文规范，不夸张、不省略重要节点。
-5. 直接输出汇报内容（对相关表达只进行优化润色，不进行不符实际的扩写）；不要添加任何说明、标题或结尾落款。
+5. 直接输出汇报内容，不要添加任何说明、标题或结尾落款。
 
 原始记录：
 ${rawList}`;
@@ -647,6 +698,7 @@ ${rawList}`;
                     if (content) {
                         reportArea.textContent = content;
                         addToHistory(content);
+                        document.getElementById('saveCurrentRow').style.display = 'flex';
                     } else {
                         throw new Error('AI 返回内容为空');
                     }
@@ -684,6 +736,9 @@ ${rawList}`;
             document.getElementById('generateBtn').addEventListener('click', generateNormalReport);
             document.getElementById('aiGenerateBtn').addEventListener('click', generateAIReport);
             document.getElementById('copyBtn').addEventListener('click', copyCurrent);
+
+            // 选用当前结果按钮
+            document.getElementById('saveCurrentBtn').addEventListener('click', saveCurrentReport);
 
             function setDefaultDateRange() {
                 const now = new Date();
